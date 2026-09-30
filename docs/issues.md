@@ -41,6 +41,10 @@ Implemented foundation:
 - `nflverse load-samples` imports changed data with upserts.
 - `nflverse test-reimport` verifies that reimporting does not duplicate rows.
 - `football-db build-model` syncs canonical model tables after staging updates.
+- `nflverse sync-samples` checks release metadata and downloads only changed or
+  missing selected assets.
+- `nflverse sync-samples --load` reimports changed assets and records refresh
+  audits in PostgreSQL.
 
 Future work should add scheduled refresh orchestration around these commands.
 
@@ -71,8 +75,6 @@ uv run --python 3.12 football-db check
 Refresh after assets change:
 
 ```sh
-uv run --python 3.12 nflverse download-samples
-uv run --python 3.12 nflverse load-samples
-uv run --python 3.12 football-db build-model
+uv run --python 3.12 nflverse sync-samples --load
 uv run --python 3.12 football-db check
 ```

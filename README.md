@@ -188,6 +188,19 @@ Verify reimporting data does not create duplicates:
 uv run --python 3.12 nflverse test-reimport
 ```
 
+Check GitHub release metadata and download only changed or missing sample
+assets:
+
+```sh
+uv run --python 3.12 nflverse sync-samples
+```
+
+Sync changed assets and load them into Postgres:
+
+```sh
+uv run --python 3.12 nflverse sync-samples --load
+```
+
 Stop and remove the Terraform-managed Postgres container:
 
 ```sh

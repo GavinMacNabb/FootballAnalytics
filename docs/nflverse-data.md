@@ -76,12 +76,30 @@ uv run --python 3.12 nflverse load-samples
 uv run --python 3.12 nflverse test-reimport
 ```
 
+After the initial download, prefer the sync command:
+
+```sh
+uv run --python 3.12 nflverse sync-samples
+uv run --python 3.12 nflverse sync-samples --load
+```
+
+`sync-samples` compares the selected release assets against the stored manifest.
+It downloads only missing or changed files based on release asset ID, timestamp,
+size, digest and local checksum. With `--load`, changed assets are reimported
+and the canonical `football` tables are resynced. If no changed assets are
+detected, loading is skipped unless `--force-load` is provided.
+
 By default, the loader reads and parses the full original Parquet files but only
 loads the first 10,000 rows from high-volume fact/event assets into PostgreSQL.
 Reference assets for schedules, teams, players and weekly rosters are loaded
 uncapped. Use `--sample-row-limit 0` to load the full selected files.
 
 The report is written to `data/reports/nflverse_sample_report.json`.
+
+Refresh audits are stored in PostgreSQL:
+
+- `nflverse.refresh_runs`
+- `nflverse.refresh_assets`
 
 ## Relationship checks
 

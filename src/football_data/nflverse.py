@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 import psycopg
+from psycopg.types.json import Jsonb
 
 
 GITHUB_API = "https://api.github.com/repos/nflverse/nflverse-data/releases/tags/{tag}"
@@ -156,6 +157,92 @@ def read_manifest() -> list[dict[str, Any]]:
     return json.loads(path.read_text())
 
 
+def read_manifest_or_empty() -> list[dict[str, Any]]:
+    path = DEFAULT_RAW_DIR / "manifest.json"
+    if not path.exists():
+        return []
+    return json.loads(path.read_text())
+
+
+def manifest_by_asset(manifest: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
+    return {(row["tag"], row["asset_name"]): row for row in manifest}
+
+
+def classify_asset_change(asset: Asset, previous: dict[str, Any] | None) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    path = asset.local_path
+    if previous is None:
+        reasons.append("missing_manifest")
+    else:
+        if previous.get("asset_id") != asset.asset_id:
+            reasons.append("asset_id_changed")
+        if previous.get("source_updated_at") != asset.updated_at:
+            reasons.append("source_updated_at_changed")
+        if previous.get("source_size") != asset.size:
+            reasons.append("source_size_changed")
+        if previous.get("source_digest") != asset.digest:
+            reasons.append("source_digest_changed")
+    if not path.exists():
+        reasons.append("missing_local_file")
+    elif path.stat().st_size != asset.size:
+        reasons.append("local_size_mismatch")
+    else:
+        expected = expected_sha(asset)
+        if expected and sha256_file(path) != expected:
+            reasons.append("local_checksum_mismatch")
+    return ("changed" if reasons else "unchanged", reasons)
+
+
+def sync_assets() -> dict[str, Any]:
+    previous_manifest = read_manifest_or_empty()
+    previous_by_asset = manifest_by_asset(previous_manifest)
+    new_manifest_by_asset: dict[tuple[str, str], dict[str, Any]] = {}
+    asset_results = []
+
+    for asset in selected_assets():
+        previous = previous_by_asset.get((asset.tag, asset.name))
+        status, reasons = classify_asset_change(asset, previous)
+        if status == "changed":
+            row = download_file(asset)
+            action = "downloaded"
+        else:
+            local_sha = sha256_file(asset.local_path)
+            row = manifest_row(asset, asset.local_path, local_sha, skipped=True)
+            action = "skipped"
+        key = (row["tag"], row["asset_name"])
+        new_manifest_by_asset[key] = row
+        asset_results.append(
+            {
+                "tag": asset.tag,
+                "asset_name": asset.name,
+                "status": status,
+                "action": action,
+                "reasons": reasons,
+                "source_updated_at": asset.updated_at,
+                "source_digest": asset.digest,
+                "local_path": str(asset.local_path),
+            }
+        )
+
+    # Preserve manifest rows for assets not managed by the current sample set.
+    for key, row in previous_by_asset.items():
+        new_manifest_by_asset.setdefault(key, row)
+
+    new_manifest = sorted(new_manifest_by_asset.values(), key=lambda row: (row["tag"], row["asset_name"]))
+    write_manifest(new_manifest)
+    changed = [result for result in asset_results if result["status"] == "changed"]
+    skipped = [result for result in asset_results if result["status"] == "unchanged"]
+    return {
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "manifest_path": str(DEFAULT_RAW_DIR / "manifest.json"),
+        "assets_checked": len(asset_results),
+        "assets_changed": len(changed),
+        "assets_skipped": len(skipped),
+        "load_recommended": bool(changed),
+        "assets": asset_results,
+    }
+
+
 def connect(database_url: str) -> psycopg.Connection:
     return psycopg.connect(database_url, autocommit=False)
 
@@ -178,6 +265,36 @@ def create_schema(conn: psycopg.Connection) -> None:
             row_count integer NOT NULL,
             imported_at timestamptz NOT NULL DEFAULT now(),
             PRIMARY KEY (tag, asset_name)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS nflverse.refresh_runs (
+            refresh_run_id bigserial PRIMARY KEY,
+            command text NOT NULL,
+            status text NOT NULL,
+            started_at timestamptz NOT NULL DEFAULT now(),
+            completed_at timestamptz,
+            assets_checked integer NOT NULL DEFAULT 0,
+            assets_changed integer NOT NULL DEFAULT 0,
+            assets_skipped integer NOT NULL DEFAULT 0,
+            load_requested boolean NOT NULL DEFAULT false,
+            load_completed boolean NOT NULL DEFAULT false,
+            validation_passed boolean,
+            report jsonb NOT NULL DEFAULT '{}'::jsonb
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS nflverse.refresh_assets (
+            refresh_run_id bigint NOT NULL REFERENCES nflverse.refresh_runs(refresh_run_id) ON DELETE CASCADE,
+            tag text NOT NULL,
+            asset_name text NOT NULL,
+            status text NOT NULL,
+            action text NOT NULL,
+            reasons jsonb NOT NULL DEFAULT '[]'::jsonb,
+            source_updated_at timestamptz,
+            source_digest text,
+            local_path text,
+            PRIMARY KEY (refresh_run_id, tag, asset_name)
         )
         """,
         """
@@ -893,6 +1010,73 @@ LOADERS = [
 ]
 
 
+def load_all_samples(conn: psycopg.Connection, manifest: list[dict[str, Any]]) -> dict[str, Any]:
+    loaded = {loader.__name__.replace("load_", ""): loader(conn, manifest) for loader in LOADERS}
+    loaded["derived_snap_player_mappings"] = derive_snap_player_mappings(conn)
+    loaded["model_tables"] = sync_model_tables(conn)
+    return loaded
+
+
+def record_refresh_run(
+    conn: psycopg.Connection,
+    *,
+    command: str,
+    sync_report: dict[str, Any],
+    load_requested: bool,
+    load_completed: bool,
+    validation_passed: bool | None,
+    status: str,
+    report: dict[str, Any],
+) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO nflverse.refresh_runs (
+                command, status, completed_at, assets_checked, assets_changed,
+                assets_skipped, load_requested, load_completed, validation_passed, report
+            )
+            VALUES (%s, %s, now(), %s, %s, %s, %s, %s, %s, %s)
+            RETURNING refresh_run_id
+            """,
+            (
+                command,
+                status,
+                sync_report.get("assets_checked", 0),
+                sync_report.get("assets_changed", 0),
+                sync_report.get("assets_skipped", 0),
+                load_requested,
+                load_completed,
+                validation_passed,
+                Jsonb(report),
+            ),
+        )
+        refresh_run_id = cur.fetchone()[0]
+        cur.executemany(
+            """
+            INSERT INTO nflverse.refresh_assets (
+                refresh_run_id, tag, asset_name, status, action, reasons,
+                source_updated_at, source_digest, local_path
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            [
+                (
+                    refresh_run_id,
+                    asset["tag"],
+                    asset["asset_name"],
+                    asset["status"],
+                    asset["action"],
+                    Jsonb(asset["reasons"]),
+                    asset["source_updated_at"],
+                    asset["source_digest"],
+                    asset["local_path"],
+                )
+                for asset in sync_report.get("assets", [])
+            ],
+        )
+    return refresh_run_id
+
+
 def normalized_name(value: str | bytes | None) -> str:
     if not value:
         return ""
@@ -1147,6 +1331,8 @@ def sync_model_tables(conn: psycopg.Connection) -> dict[str, int]:
 def table_counts(conn: psycopg.Connection) -> dict[str, int]:
     tables = [
         ("nflverse", "asset_imports"),
+        ("nflverse", "refresh_runs"),
+        ("nflverse", "refresh_assets"),
         ("nflverse", "teams"),
         ("nflverse", "games"),
         ("nflverse", "players"),
@@ -1295,15 +1481,67 @@ def command_download_samples(args: argparse.Namespace) -> None:
     print(f"Downloaded/verified {len(rows)} release assets. Manifest: {DEFAULT_RAW_DIR / 'manifest.json'}")
 
 
+def command_sync_samples(args: argparse.Namespace) -> None:
+    global SAMPLE_ROW_LIMIT
+    SAMPLE_ROW_LIMIT = args.sample_row_limit
+    sync_report = sync_assets()
+    result: dict[str, Any] = {"sync": sync_report}
+
+    if args.load:
+        with connect(args.database_url) as conn:
+            create_schema(conn)
+            should_load = sync_report["load_recommended"] or args.force_load
+            if should_load:
+                manifest = read_manifest()
+                loaded = load_all_samples(conn, manifest)
+                conn.commit()
+                validation_report = validate(conn)
+                result["loaded_rows_this_run"] = loaded
+                result["validation"] = validation_report
+                refresh_run_id = record_refresh_run(
+                    conn,
+                    command="sync-samples --load",
+                    sync_report=sync_report,
+                    load_requested=True,
+                    load_completed=True,
+                    validation_passed=validation_report["passed"],
+                    status="completed" if validation_report["passed"] else "failed",
+                    report=result,
+                )
+                conn.commit()
+                result["refresh_run_id"] = refresh_run_id
+                result["audit"] = {"refresh_run_id": refresh_run_id, "refresh_asset_rows": len(sync_report["assets"])}
+                if not validation_report["passed"]:
+                    write_report(result)
+                    print(json.dumps(result, indent=2, sort_keys=True))
+                    raise SystemExit("Relationship validation failed.")
+            else:
+                result["load_skipped_reason"] = "No changed assets detected. Use --force-load to import anyway."
+                refresh_run_id = record_refresh_run(
+                    conn,
+                    command="sync-samples --load",
+                    sync_report=sync_report,
+                    load_requested=True,
+                    load_completed=False,
+                    validation_passed=None,
+                    status="skipped",
+                    report=result,
+                )
+                conn.commit()
+                result["refresh_run_id"] = refresh_run_id
+                result["audit"] = {"refresh_run_id": refresh_run_id, "refresh_asset_rows": len(sync_report["assets"])}
+
+    write_report(result)
+    print(json.dumps(result, indent=2, sort_keys=True))
+
+
 def command_load_samples(args: argparse.Namespace) -> None:
     global SAMPLE_ROW_LIMIT
     SAMPLE_ROW_LIMIT = args.sample_row_limit
     manifest = read_manifest()
     with connect(args.database_url) as conn:
         create_schema(conn)
-        loaded = {loader.__name__.replace("load_", ""): loader(conn, manifest) for loader in LOADERS}
-        loaded["derived_snap_player_mappings"] = derive_snap_player_mappings(conn)
-        loaded["model_tables"] = sync_model_tables(conn)
+        loaded = load_all_samples(conn, manifest)
         conn.commit()
         report = validate(conn)
     report["loaded_rows_this_run"] = loaded
@@ -1342,16 +1580,10 @@ def command_test_reimport(args: argparse.Namespace) -> None:
     manifest = read_manifest()
     with connect(args.database_url) as conn:
         create_schema(conn)
-        for loader in LOADERS:
-            loader(conn, manifest)
-        derive_snap_player_mappings(conn)
-        sync_model_tables(conn)
+        load_all_samples(conn, manifest)
         conn.commit()
         before = table_counts(conn)
-        for loader in LOADERS:
-            loader(conn, manifest)
-        derive_snap_player_mappings(conn)
-        sync_model_tables(conn)
+        load_all_samples(conn, manifest)
         conn.commit()
         after = table_counts(conn)
         report = validate(conn)
@@ -1381,6 +1613,12 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("manifest", help="Print selected release assets from GitHub.")
     subparsers.add_parser("download-samples", help="Download selected Parquet release assets and write a checksum manifest.")
+    sync_parser = subparsers.add_parser(
+        "sync-samples",
+        help="Check selected release assets, download changed/missing files, and optionally load them.",
+    )
+    sync_parser.add_argument("--load", action="store_true", help="Load changed assets into PostgreSQL after syncing.")
+    sync_parser.add_argument("--force-load", action="store_true", help="Load even when no changed assets are detected.")
     subparsers.add_parser("load-samples", help="Load downloaded samples into PostgreSQL and validate relationships.")
     subparsers.add_parser("build-model-tables", help="Sync canonical football model tables from loaded nflverse staging tables.")
     subparsers.add_parser("validate", help="Validate already-loaded PostgreSQL sample relationships.")
@@ -1394,6 +1632,7 @@ def main() -> None:
     commands = {
         "manifest": command_manifest,
         "download-samples": command_download_samples,
+        "sync-samples": command_sync_samples,
         "load-samples": command_load_samples,
         "build-model-tables": command_build_model_tables,
         "validate": command_validate,

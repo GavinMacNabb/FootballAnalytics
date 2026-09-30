@@ -1,0 +1,72 @@
+name: nflverse scheduled sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_load:
+        description: "Load even when no changed assets are detected"
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    # Fixed UTC schedules. During US daylight time, 13:00 UTC is 9 AM Eastern.
+    - cron: "0 13 * * *"
+    # Extra Thursday correction check. During US daylight time, 15:00 UTC is 11 AM Eastern.
+    - cron: "0 15 * * 4"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nflverse-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync nflverse assets
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      NFLVERSE_SAMPLE_ROW_LIMIT: ${{ vars.NFLVERSE_SAMPLE_ROW_LIMIT || '10000' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Verify database secret
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "DATABASE_URL repository secret is required for scheduled sync."
+            exit 1
+          fi
+
+      - name: Restore nflverse raw cache
+        uses: actions/cache@v4
+        with:
+          path: data/raw/nflverse
+          key: nflverse-raw-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            nflverse-raw-${{ runner.os }}-
+
+      - name: Sync and load changed assets
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force_load }}" = "true" ]; then
+            EXTRA_ARGS="--force-load"
+          fi
+
+          uv run --python 3.12 nflverse sync-samples --load $EXTRA_ARGS
+
+      - name: Validate database
+        run: uv run --python 3.12 football-db check
+
+      - name: Upload sync report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nflverse-sync-report
+          path: data/reports/
+          if-no-files-found: ignore

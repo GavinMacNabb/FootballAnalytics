@@ -168,6 +168,36 @@ First-build cadence:
 - Refresh player and weekly roster reference data daily.
 - Refresh team reference data when release asset metadata changes.
 
+## Scheduled automation
+
+GitHub Actions workflow:
+[`nflverse-sync.yml`](../.github/workflows/nflverse-sync.yml).
+
+Fixed schedule:
+
+- `13:00 UTC` every day
+- `15:00 UTC` every Thursday for stat-correction checks
+
+Required repository secret:
+
+- `DATABASE_URL`: PostgreSQL connection URL for the target database.
+
+Optional repository variable:
+
+- `NFLVERSE_SAMPLE_ROW_LIMIT`: row cap for high-volume sample assets. Defaults
+  to `10000`.
+
+The scheduled job restores a cache of `data/raw/nflverse`, runs
+`nflverse sync-samples --load`, validates with `football-db check`, and uploads
+the sync report artifact.
+
+For a local fixed-time schedule, use cron:
+
+```cron
+0 9 * * * cd /path/to/FootballAnalytics && mkdir -p logs && uv run --python 3.12 nflverse sync-samples --load >> logs/nflverse-sync.log 2>&1
+0 11 * * 4 cd /path/to/FootballAnalytics && mkdir -p logs && uv run --python 3.12 nflverse sync-samples --load >> logs/nflverse-sync.log 2>&1
+```
+
 ## Attribution
 
 Data comes from nflverse/nflverse-data and the upstream sources documented by

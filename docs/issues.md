@@ -45,6 +45,8 @@ Implemented foundation:
   missing selected assets.
 - `nflverse sync-samples --load` reimports changed assets and records refresh
   audits in PostgreSQL.
+- `.github/workflows/nflverse-sync.yml` runs the sync on a fixed schedule when
+  `DATABASE_URL` is configured as a repository secret.
 
 Future work should add scheduled refresh orchestration around these commands.
 

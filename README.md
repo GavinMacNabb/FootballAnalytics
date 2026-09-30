@@ -201,6 +201,30 @@ Sync changed assets and load them into Postgres:
 uv run --python 3.12 nflverse sync-samples --load
 ```
 
+## Scheduled Updates
+
+The repository includes a GitHub Actions workflow at
+[.github/workflows/nflverse-sync.yml](.github/workflows/nflverse-sync.yml).
+
+It runs at fixed UTC times:
+
+- every day at `13:00 UTC`
+- every Thursday at `15:00 UTC` for the stat-correction check
+
+To enable it, add a repository secret named `DATABASE_URL` with a Postgres
+connection string for the database you want the scheduled job to update.
+
+You can also run it manually from GitHub Actions. The manual run includes a
+`force_load` option to load even when no changed assets are detected.
+
+For a local fixed-time schedule, add a cron entry on the machine that has access
+to your database:
+
+```cron
+0 9 * * * cd /path/to/FootballAnalytics && mkdir -p logs && uv run --python 3.12 nflverse sync-samples --load >> logs/nflverse-sync.log 2>&1
+0 11 * * 4 cd /path/to/FootballAnalytics && mkdir -p logs && uv run --python 3.12 nflverse sync-samples --load >> logs/nflverse-sync.log 2>&1
+```
+
 Stop and remove the Terraform-managed Postgres container:
 
 ```sh

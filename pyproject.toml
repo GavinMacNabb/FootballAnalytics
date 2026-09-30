@@ -1,0 +1,21 @@
+[project]
+name = "football-analytics"
+version = "0.1.0"
+description = "Football analytics data ingestion proof of concept."
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "pandas>=2.2.3",
+    "psycopg[binary]>=3.2.3",
+    "pyarrow>=18.0.0",
+]
+
+[project.scripts]
+football-db = "football_data.db:main"
+nflverse = "football_data.nflverse:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/football_data"]

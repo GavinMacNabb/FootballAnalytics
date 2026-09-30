@@ -1,0 +1,6 @@
+project_name      = "football-analytics"
+postgres_version  = "16"
+database_name     = "football_analytics"
+database_user     = "football"
+database_password = "football"
+host_port         = 5432

@@ -1,0 +1,141 @@
+{
+  "name": "core_football_schema",
+  "version": 1,
+  "issue_refs": [
+    "https://github.com/GavinMacNabb/FootballAnalytics/issues/2",
+    "https://github.com/GavinMacNabb/FootballAnalytics/issues/5",
+    "https://github.com/GavinMacNabb/FootballAnalytics/issues/11"
+  ],
+  "description": "Model-ready football schema built from nflverse release assets. Coaching data is intentionally excluded from this schema slice.",
+  "schemas": {
+    "nflverse": {
+      "purpose": "Source-preserving staging tables loaded from nflverse release assets."
+    },
+    "football": {
+      "purpose": "Canonical dimensions, facts and crosswalks for NFL analytics models."
+    }
+  },
+  "tables": [
+    {
+      "name": "football.dim_teams",
+      "grain": "One row per current or historical team abbreviation represented in nflverse teams metadata.",
+      "primary_key": ["team_abbr"],
+      "source": "teams_colors_logos.parquet",
+      "required_columns": ["team_abbr", "source_asset"],
+      "columns": {
+        "team_abbr": "Canonical team abbreviation used across facts.",
+        "team_name": "Display name.",
+        "nflverse_team_id": "nflverse team identifier when available.",
+        "primary_color": "Primary team colour.",
+        "secondary_color": "Secondary team colour.",
+        "logo_url": "Logo URL.",
+        "source_asset": "nflverse release asset name."
+      }
+    },
+    {
+      "name": "football.dim_players",
+      "grain": "One row per GSIS player ID.",
+      "primary_key": ["gsis_id"],
+      "source": "players.parquet plus supplemental weekly_rosters IDs",
+      "required_columns": ["gsis_id", "source_asset"],
+      "columns": {
+        "gsis_id": "Canonical player ID for model facts.",
+        "display_name": "Player display name.",
+        "first_name": "First name.",
+        "last_name": "Last name.",
+        "position": "Primary position from source metadata.",
+        "source_asset": "nflverse release asset name."
+      }
+    },
+    {
+      "name": "football.xref_player_ids",
+      "grain": "One row per external provider player ID.",
+      "primary_key": ["provider", "provider_player_id"],
+      "foreign_keys": {"gsis_id": "football.dim_players.gsis_id"},
+      "source": "players.parquet, weekly_rosters and deterministic snap-count mapping",
+      "required_columns": ["provider", "provider_player_id", "gsis_id", "source_asset"]
+    },
+    {
+      "name": "football.fact_games",
+      "grain": "One row per NFL game.",
+      "primary_key": ["game_id"],
+      "foreign_keys": {
+        "home_team": "football.dim_teams.team_abbr",
+        "away_team": "football.dim_teams.team_abbr"
+      },
+      "source": "games.parquet",
+      "required_columns": ["game_id", "season", "week", "source_asset"]
+    },
+    {
+      "name": "football.fact_events",
+      "grain": "One row per play/event in a game.",
+      "primary_key": ["game_id", "play_id"],
+      "foreign_keys": {
+        "game_id": "football.fact_games.game_id",
+        "possession_team": "football.dim_teams.team_abbr",
+        "defense_team": "football.dim_teams.team_abbr"
+      },
+      "source": "play_by_play_2024.parquet sample for first build",
+      "required_columns": ["game_id", "play_id", "source_asset"]
+    },
+    {
+      "name": "football.fact_player_team_weeks",
+      "grain": "One row per player, team, season and week roster assignment.",
+      "primary_key": ["season", "week", "player_id", "team"],
+      "foreign_keys": {
+        "player_id": "football.dim_players.gsis_id",
+        "team": "football.dim_teams.team_abbr"
+      },
+      "source": "roster_weekly_2024.parquet sample for first build",
+      "required_columns": ["season", "week", "player_id", "team", "source_asset"]
+    },
+    {
+      "name": "football.fact_player_week_stats",
+      "grain": "One row per player, team, season and week statistics record.",
+      "primary_key": ["season", "week", "player_id", "team"],
+      "foreign_keys": {
+        "player_id": "football.dim_players.gsis_id",
+        "team": "football.dim_teams.team_abbr"
+      },
+      "source": "stats_player_week_2024.parquet sample for first build",
+      "required_columns": ["season", "week", "player_id", "team", "source_asset"]
+    },
+    {
+      "name": "football.fact_team_week_stats",
+      "grain": "One row per team, season and week statistics record.",
+      "primary_key": ["season", "week", "team"],
+      "foreign_keys": {"team": "football.dim_teams.team_abbr"},
+      "source": "stats_team_week_2024.parquet sample for first build",
+      "required_columns": ["season", "week", "team", "source_asset"]
+    },
+    {
+      "name": "football.fact_snap_counts",
+      "grain": "One row per game, player and team snap-count record.",
+      "primary_key": ["game_id", "player_id", "team"],
+      "foreign_keys": {
+        "game_id": "football.fact_games.game_id",
+        "player_id": "football.dim_players.gsis_id",
+        "team": "football.dim_teams.team_abbr"
+      },
+      "source": "snap_counts_2024.parquet sample for first build",
+      "required_columns": ["game_id", "player_id", "team", "source_asset"]
+    }
+  ],
+  "validation": [
+    "Required parquet files are downloaded and parseable.",
+    "Primary keys are non-null and stable on reimport.",
+    "Game home/away teams resolve to football.dim_teams.",
+    "Player facts resolve to football.dim_players.",
+    "Team facts resolve to football.dim_teams.",
+    "Event and snap-count facts resolve to football.fact_games.",
+    "Reimporting the same assets does not increase row counts."
+  ],
+  "excluded": [
+    "coaches",
+    "coach assignments",
+    "play caller data",
+    "contracts",
+    "draft data",
+    "advanced charting releases"
+  ]
+}

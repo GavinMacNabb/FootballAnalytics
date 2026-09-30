@@ -1,11 +1,12 @@
 # FootballAnalytics
 
-Proof-of-concept football analytics workspace for NFL data ingestion, normalized
-PostgreSQL storage and model-ready football tables.
+FootballAnalytics is a local-first NFL analytics backend. It ingests nflverse
+release assets, stores source data in PostgreSQL, and builds normalized,
+model-ready football tables for analytics, forecasting and product features.
 
 ## What This Builds
 
-The project uses **nflverse/nflverse-data** as a post-game batch feed.
+The project uses **nflverse/nflverse-data** as the primary post-game batch feed.
 
 Data flows through two PostgreSQL schemas:
 
@@ -28,19 +29,22 @@ Schema docs:
 
 ## Prerequisites
 
-Install these first:
+You need:
 
 - Docker Desktop, with the Docker daemon running
 - Terraform
 - `uv`
+- Git
 
-On macOS with Homebrew:
+### macOS
+
+Install command-line tools:
 
 ```sh
 brew install uv terraform
 ```
 
-Install Docker Desktop from Docker, open it, and wait until it says Docker is
+Install Docker Desktop for Mac from Docker, open it, and wait until Docker is
 running.
 
 Check your tools:
@@ -50,6 +54,47 @@ uv --version
 terraform version
 docker version
 ```
+
+### Windows WSL
+
+Use WSL 2 with Ubuntu or another Linux distribution.
+
+Install Docker Desktop for Windows, then enable WSL integration:
+
+1. Open Docker Desktop.
+2. Go to Settings.
+3. Open Resources -> WSL Integration.
+4. Enable integration for your WSL distribution.
+5. Apply and restart Docker Desktop if prompted.
+
+Inside WSL, install the command-line tools:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y curl unzip git
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Restart your WSL shell or source your shell profile, then install Terraform:
+
+```sh
+wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(. /etc/os-release && echo "$VERSION_CODENAME") main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+sudo apt-get update
+sudo apt-get install -y terraform
+```
+
+Check your tools inside WSL:
+
+```sh
+uv --version
+terraform version
+docker version
+```
+
+Run this project from the Linux filesystem, such as
+`~/code/FootballAnalytics`, rather than from `/mnt/c/...`. Docker and file I/O
+are much faster that way.
 
 ## Setup From Scratch
 
@@ -86,6 +131,12 @@ uv run --python 3.12 football-db check
 ```
 
 If the final command passes, the local backend database is ready.
+
+For the full verification path, also run:
+
+```sh
+uv run --python 3.12 nflverse test-reimport
+```
 
 ## Database Connection
 
